@@ -1,0 +1,222 @@
+"""
+Diferença fundamental das buscas anteriores
+
+BFS, DFS, Greedy e A* mantêm uma fronteira explícita de estados a
+explorar — são buscas em GRAFO. Algoritmos de busca local mantêm apenas
+O(1) estados em memória, explorando o espaço de estados como se fossem
+movimentos em uma paisagem de custo.
+
+Isso os torna escaláveis para tabuleiros grandes, mas sem garantia de
+encontrar a solução ótima ou sequer uma solução.
+
+
+HILL CLIMBING 
+
+Princípio:
+  A cada passo, avalia todos os vizinhos do estado atual e move-se para
+  o que tiver o menor valor heurístico (h = células desligadas). Para se
+  o melhor vizinho não melhorar o estado atual (máximo local).
+
+Variante escolhida: Hill Climbing com Reinícios Aleatórios (Random Restarts)
+  Para mitigar o problema de máximos locais, o algoritmo é reiniciado
+  várias vezes a partir de estados aleatórios. O melhor resultado
+  encontrado em todos os reinícios é retornado.
+
+  Número de reinícios = n² (proporcional ao tamanho do tabuleiro).
+
+
+SIMULATED ANNEALING (Têmpera Simulada)
+
+Princípio:
+  Inspirado no processo de recozimento de metais. Aceita movimentos
+  que PIORAM a solução com probabilidade:
+
+    P(aceitar piora) = exp(-Δh / T)
+
+  onde Δh > 0 é o quanto piora e T é a "temperatura" atual.
+
+  No início, T é alta → aceita muitas pioras (exploração global).
+  T vai diminuindo (cooling) → aceita cada vez menos pioras (explotação).
+
+  Isso permite escapar de máximos locais, especialmente no início da busca.
+
+Parâmetros de temperatura:
+  T_inicial = N² / 2   (proporcional ao problema)
+  alpha = 0.995         (fator de resfriamento — T = T * alpha a cada passo)
+  T_minima = 0.01       (critério de parada por temperatura)
+  max_iter = 50_000     (limite de iterações total)
+"""
+
+import math
+import random
+import time
+import tracemalloc
+
+from board import Board, all_on, count_off, toggle, random_board
+from bfs import SearchResult
+
+
+
+# Hill Climbing com Reinícios Aleatórios
+
+
+def hill_climbing(initial: Board, seed: int | None = 42) -> SearchResult:
+    """
+    Resolve o Lights Out usando Hill Climbing com reinícios aleatórios.
+
+    Parâmetros:
+   
+    initial : estado inicial do tabuleiro
+    seed    : semente para reprodutibilidade dos reinícios
+
+    Retorna:
+  
+    SearchResult (optimal=False — busca local não garante optimalidade).
+    """
+    n = len(initial)
+    rng = random.Random(seed)
+    n_restarts = n * n                   # número de reinícios
+    result = SearchResult(algorithm="HillClimbing", board_size=n, found=False, optimal=False)
+    nodes_expanded = 0
+
+    tracemalloc.start()
+    start = time.perf_counter()
+
+    best_result: SearchResult | None = None
+
+    for restart in range(n_restarts + 1):
+        # Primeira tentativa: usa o estado inicial. Demais: estado aleatório.
+        current = initial if restart == 0 else random_board(n, seed=rng.randint(0, 10**9))
+        actions: list[tuple[int, int]] = []
+
+        while True:
+            if all_on(current):
+                r = SearchResult(
+                    algorithm="HillClimbing", board_size=n, found=True,
+                    actions=actions, optimal=False
+                )
+                # Guarda o melhor (menor número de ações) encontrado
+                if best_result is None or len(actions) < len(best_result.actions):
+                    best_result = r
+                break
+
+            # Avalia todos os vizinhos e escolhe o melhor
+            best_h = count_off(current)
+            best_move: tuple[int, int] | None = None
+            best_next: Board | None = None
+
+            for r in range(n):
+                for c in range(n):
+                    candidate = toggle(current, r, c)
+                    nodes_expanded += 1
+                    h = count_off(candidate)
+                    if h < best_h:
+                        best_h = h
+                        best_move = (r, c)
+                        best_next = candidate
+
+            if best_move is None:
+                # Máximo local — interrompe este reinício
+                break
+
+            actions = actions + [best_move]
+            current = best_next
+
+    if best_result is not None:
+        result = best_result
+
+    result.nodes_expanded = nodes_expanded
+    result.time_seconds = time.perf_counter() - start
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    result.memory_peak_kb = peak / 1024
+    return result
+
+
+
+# Simulated Annealing
+
+
+def simulated_annealing(initial: Board, seed: int | None = 42) -> SearchResult:
+    """
+    Resolve o Lights Out usando Simulated Annealing.
+
+    Parâmetros:
+
+    initial : estado inicial
+    seed    : semente para reprodutibilidade
+
+    Retorna:
+
+    SearchResult (optimal=False).
+    """
+    n = len(initial)
+    rng = random.Random(seed)
+    result = SearchResult(algorithm="SimAnneal", board_size=n, found=False, optimal=False)
+
+    tracemalloc.start()
+    start = time.perf_counter()
+
+    #  Parâmetros de temperatura 
+    T = max(n * n / 2.0, 1.0)           # temperatura inicial
+    alpha = 0.995                         # taxa de resfriamento
+    T_min = 0.01                          # temperatura mínima
+    max_iter = 50_000                     # limite de iterações
+
+    current = initial
+    current_h = count_off(current)
+    best_board = current
+    best_h = current_h
+    best_actions: list[tuple[int, int]] = []
+
+    # Rastreia o caminho atual (ações desde o início)
+    # Nota: em SA o "caminho" não é diretamente o caminho ótimo — rastreamos
+    # do melhor estado encontrado para fins de relatório.
+    actions_log: list[tuple[int, int]] = []
+    nodes_expanded = 0
+
+    for iteration in range(max_iter):
+        if T < T_min:
+            break
+
+        # Escolhe um vizinho aleatório (um clique aleatório)
+        r = rng.randrange(n)
+        c = rng.randrange(n)
+        next_board = toggle(current, r, c)
+        next_h = count_off(next_board)
+        nodes_expanded += 1
+
+        delta = next_h - current_h        # diferença de custo (positivo = piora)
+
+        # Aceita se melhora, ou com probabilidade e^(-Δ/T) se piora
+        if delta < 0 or rng.random() < math.exp(-delta / T):
+            current = next_board
+            current_h = next_h
+            actions_log.append((r, c))
+
+            if current_h < best_h:
+                best_h = current_h
+                best_board = current
+                best_actions = list(actions_log)
+
+            if all_on(current):
+                result.found = True
+                result.actions = actions_log
+                result.nodes_expanded = nodes_expanded
+                result.time_seconds = time.perf_counter() - start
+                _, peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                result.memory_peak_kb = peak / 1024
+                return result
+
+        T *= alpha                         # resfriamento geométrico
+
+    # Se não encontrou solução completa, reporta o melhor estado parcial
+    result.found = all_on(best_board)
+    result.actions = best_actions
+    result.nodes_expanded = nodes_expanded
+    result.time_seconds = time.perf_counter() - start
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    result.memory_peak_kb = peak / 1024
+    return result
