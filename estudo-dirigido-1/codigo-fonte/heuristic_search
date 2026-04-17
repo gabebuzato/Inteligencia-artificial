@@ -1,0 +1,195 @@
+"""
+
+Heurística utilizada
+
+h(estado) = número de células DESLIGADAS no tabuleiro.
+
+Justificativa:
+  Cada clique pode ligar no máximo 5 células de uma vez (a célula central
+  e seus 4 vizinhos). Portanto, são necessários pelo menos ceil(apagadas/5)
+  cliques para resolver o puzzle. A heurística `count_off` é admissível
+  (nunca superestima) e consistente (satisfaz a desigualdade triangular),
+  garantindo a optimalidade do A*.
+
+  É uma heurística simples mas eficaz: estados com mais células apagadas
+  são claramente mais distantes da solução.
+
+
+BUSCA GULOSA 
+
+Princípio:
+  Sempre expande o nó que parece mais próximo do objetivo segundo h(n).
+  Ignora o custo acumulado g(n) — é "gulosa" pois só olha para frente.
+
+  f(n) = h(n)
+
+Vantagem  : tende a ser muito rápida quando a heurística é boa.
+Limitação : NÃO garante solução ótima; pode se perder em caminhos longos.
+
+
+ALGORITMO A*
+
+Princípio:
+  Combina o custo acumulado g(n) com a estimativa heurística h(n):
+
+  f(n) = g(n) + h(n)
+
+  Com uma heurística admissível e consistente, A* é ótimo e completo.
+
+Complexidade:
+  Tempo e memória exponenciais no pior caso, mas muito melhor que BFS na
+  prática quando a heurística é informativa.
+
+Decisão de projeto — heap com estado hasheável:
+  Usamos `heapq` (min-heap) como fila de prioridade. Como `Board` é uma
+  tupla de tuplas, ela é comparável e hasheável nativamente, sem precisar
+  de um wrapper. O par (f, board) é inserido diretamente no heap.
+  Em caso de empate no f, o Python compara os elementos seguintes da
+  tupla (o tabuleiro) — comportamento correto e previsível.
+"""
+
+import heapq
+import time
+import tracemalloc
+
+from board import Board, all_on, count_off, neighbors
+from bfs import SearchResult, _reconstruct
+
+
+
+# Heurística compartilhada
+
+
+def heuristic(board: Board) -> int:
+    """Número de células desligadas — admissível e consistente."""
+    return count_off(board)
+
+
+
+# Busca Gulosa
+
+
+def greedy(initial: Board, max_nodes: int = 500_000) -> SearchResult:
+    """
+    Resolve o Lights Out usando Busca Gulosa Best-First.
+
+    f(n) = h(n) = count_off(n)
+    """
+    n = len(initial)
+    result = SearchResult(algorithm="Greedy", board_size=n, found=False, optimal=False)
+
+    if all_on(initial):
+        result.found = True
+        return result
+
+    tracemalloc.start()
+    start = time.perf_counter()
+
+    # Heap: (h, board)
+    heap: list[tuple[int, Board]] = [(heuristic(initial), initial)]
+    # parent[estado] = (estado_pai, ação)
+    parent: dict[Board, tuple | None] = {initial: None}
+    nodes_expanded = 0
+
+    while heap:
+        if nodes_expanded >= max_nodes:
+            break
+
+        _, current = heapq.heappop(heap)
+        nodes_expanded += 1
+
+        for next_board, action in neighbors(current):
+            if next_board in parent:
+                continue
+
+            parent[next_board] = (current, action)
+
+            if all_on(next_board):
+                result.found = True
+                result.actions = _reconstruct(parent, next_board)
+                result.nodes_expanded = nodes_expanded
+                result.time_seconds = time.perf_counter() - start
+                _, peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                result.memory_peak_kb = peak / 1024
+                return result
+
+            heapq.heappush(heap, (heuristic(next_board), next_board))
+
+    result.nodes_expanded = nodes_expanded
+    result.time_seconds = time.perf_counter() - start
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    result.memory_peak_kb = peak / 1024
+    return result
+
+
+# A*
+
+
+def astar(initial: Board, max_nodes: int = 500_000) -> SearchResult:
+    """
+    Resolve o Lights Out usando A*.
+
+    f(n) = g(n) + h(n)
+      g(n) = número de cliques realizados até o estado n
+      h(n) = heuristic(n) = count_off(n)
+    """
+    n = len(initial)
+    result = SearchResult(algorithm="A*", board_size=n, found=False, optimal=True)
+
+    if all_on(initial):
+        result.found = True
+        return result
+
+    tracemalloc.start()
+    start = time.perf_counter()
+
+    # g_cost[estado] = custo mínimo conhecido para chegar a esse estado
+    g_cost: dict[Board, int] = {initial: 0}
+    # parent[estado] = (estado_pai, ação)
+    parent: dict[Board, tuple | None] = {initial: None}
+
+    h0 = heuristic(initial)
+    # Heap: (f, g, board) — g desempata f de forma consistente
+    heap: list[tuple[int, int, Board]] = [(h0, 0, initial)]
+    nodes_expanded = 0
+
+    while heap:
+        if nodes_expanded >= max_nodes:
+            result.optimal = None   # pode não ser ótimo se truncado
+            break
+
+        f, g, current = heapq.heappop(heap)
+
+        # Ignora entradas desatualizadas no heap (lazy deletion)
+        if g > g_cost[current]:
+            continue
+
+        nodes_expanded += 1
+
+        for next_board, action in neighbors(current):
+            new_g = g + 1                       # custo uniforme: 1 por clique
+
+            if new_g < g_cost.get(next_board, float("inf")):
+                g_cost[next_board] = new_g
+                parent[next_board] = (current, action)
+                new_f = new_g + heuristic(next_board)
+                heapq.heappush(heap, (new_f, new_g, next_board))
+
+                if all_on(next_board):
+                    result.found = True
+                    result.actions = _reconstruct(parent, next_board)
+                    result.nodes_expanded = nodes_expanded
+                    result.time_seconds = time.perf_counter() - start
+                    _, peak = tracemalloc.get_traced_memory()
+                    tracemalloc.stop()
+                    result.memory_peak_kb = peak / 1024
+                    return result
+
+    result.nodes_expanded = nodes_expanded
+    result.time_seconds = time.perf_counter() - start
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    result.memory_peak_kb = peak / 1024
+    return result
