@@ -1,0 +1,139 @@
+"""
+
+Este módulo executa todos os algoritmos de busca em tabuleiros de diferentes
+tamanhos, coleta as métricas e exibe os resultados em tabelas.
+
+Instâncias utilizadas:
+  2×2, 3×3, 5×5, 7×7, 10×10
+  (algoritmos com limite de nós são marcados como "não terminou" quando
+   excedem o limite ou o tempo máximo configurado)
+
+Metodologia:
+  - Para cada tamanho N, o mesmo estado inicial aleatório é usado para
+    to dos os algoritmos (semente fixa = N), garantindo comparação justa.
+  - BFS e DFS têm limite de 300.000 nós para evitar travamento.
+  - Greedy e A* têm limite de 500.000 nós.
+  - Hill Climbing e SA têm limite de tempo implícito nos parâmetros.
+"""
+
+import csv
+import io
+import time
+
+from board import random_board, board_to_str
+from bfs import bfs, SearchResult
+from dfs import dfs
+from heuristic_search import greedy, astar
+from local_search import hill_climbing, simulated_annealing
+
+
+# Configuração dos experimentos
+
+
+BOARD_SIZES = [2, 3, 5, 7, 10]
+
+ALGORITHMS = [
+    ("BFS",          lambda b: bfs(b, max_nodes=300_000)),
+    ("DFS",          lambda b: dfs(b, depth_limit=30, max_nodes=300_000)),
+    ("Greedy",       lambda b: greedy(b, max_nodes=500_000)),
+    ("A*",           lambda b: astar(b, max_nodes=500_000)),
+    ("HillClimbing", lambda b: hill_climbing(b, seed=42)),
+    ("SimAnneal",    lambda b: simulated_annealing(b, seed=42)),
+]
+
+SEED_BASE = 777   # semente base; semente final = SEED_BASE + N
+
+
+
+# Execução
+
+
+def run_experiments() -> list[dict]:
+    """
+    Executa todos os algoritmos em todos os tamanhos de tabuleiro.
+
+    Retorna:
+
+    Lista de dicionários com os resultados de cada execução.
+    """
+    rows = []
+
+    for n in BOARD_SIZES:
+        board = random_board(n, seed=SEED_BASE + n)
+        print(f"\n{'='*60}")
+        print(f"Tabuleiro {n}×{n}  (semente {SEED_BASE + n})")
+        print(board_to_str(board))
+        print()
+
+        for name, algo_fn in ALGORITHMS:
+            print(f"  Executando {name}...", end=" ", flush=True)
+            result: SearchResult = algo_fn(board)
+
+            status = "SIM" if result.found else "NÃO"
+            n_actions = len(result.actions) if result.found else "-"
+            optimal = (
+                "Sim" if result.optimal is True
+                else "Não" if result.optimal is False
+                else "N/D"
+            )
+
+            print(
+                f"encontrou={status}  "
+                f"ações={n_actions}  "
+                f"nós={result.nodes_expanded:,}  "
+                f"tempo={result.time_seconds:.4f}s  "
+                f"mem={result.memory_peak_kb:.1f}KB"
+            )
+
+            rows.append({
+                "Tamanho": f"{n}×{n}",
+                "Algoritmo": name,
+                "Encontrou": status,
+                "Ações": n_actions,
+                "Ótimo": optimal,
+                "Nós Expandidos": result.nodes_expanded,
+                "Tempo (s)": round(result.time_seconds, 4),
+                "Memória (KB)": round(result.memory_peak_kb, 1),
+            })
+
+    return rows
+
+
+def save_csv(rows: list[dict], path: str = "resultados.csv") -> None:
+    """Salva os resultados em CSV para uso no relatório."""
+    if not rows:
+        return
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\nResultados salvos em: {path}")
+
+
+def print_table(rows: list[dict]) -> None:
+    """Imprime tabela formatada no terminal."""
+    if not rows:
+        return
+    headers = list(rows[0].keys())
+    col_w = {h: max(len(h), max(len(str(r[h])) for r in rows)) for h in headers}
+    sep = "  ".join("-" * col_w[h] for h in headers)
+
+    print("\n" + "=" * len(sep))
+    print("  ".join(h.ljust(col_w[h]) for h in headers))
+    print(sep)
+    for row in rows:
+        print("  ".join(str(row[h]).ljust(col_w[h]) for h in headers))
+    print("=" * len(sep))
+
+
+# Ponto de entrada
+
+
+if __name__ == "__main__":
+    print("Iniciando experimentos — Problema das Luzes (Lights Out)")
+    print("Algoritmos: BFS | DFS | Greedy | A* | HillClimbing | SimAnneal")
+    print("Tamanhos  :", " | ".join(f"{n}×{n}" for n in BOARD_SIZES))
+
+    results = run_experiments()
+    print_table(results)
+    save_csv(results, "resultados.csv")
